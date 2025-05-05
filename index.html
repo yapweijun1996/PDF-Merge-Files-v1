@@ -224,11 +224,19 @@
 <body>
   <div class="container">
     <h2>Merge PDF Files</h2>
-    <label for="pdfs" id="fileInputLabel" style="font-size:1.05rem;margin-bottom:0.5rem;">Select PDF files:</label>
-    <input type="file" id="pdfs" multiple accept="application/pdf" aria-labelledby="fileInputLabel">
+    <div id="dropZone" tabindex="0" aria-label="Drag and drop PDFs here or click to browse" style="border:2px dashed #007bff;border-radius:8px;padding:1.5rem;text-align:center;cursor:pointer;background:#f1f3f6;margin-bottom:1rem;transition:background 0.2s;">
+      <span style="font-size:2rem;display:block;">📄</span>
+      <span style="font-size:1.1rem;">Drag & Drop PDFs Here</span><br>
+      <span style="font-size:0.95rem;color:#555;">or</span><br>
+      <label for="pdfs" id="fileInputLabel" style="font-size:1.05rem;margin-bottom:0.5rem;display:inline-block;background:#007bff;color:#fff;padding:0.5rem 1.2rem;border-radius:5px;cursor:pointer;">Browse</label>
+      <input type="file" id="pdfs" multiple accept="application/pdf" aria-labelledby="fileInputLabel" style="display:none;">
+    </div>
     <ul class="file-list" id="fileList" aria-label="Selected PDF files"></ul>
     <button id="merge" aria-label="Merge PDFs">Merge PDFs</button>
     <button id="darkModeToggle" aria-label="Toggle dark mode" title="Toggle dark mode">🌙</button>
+    <div id="progressBarContainer" style="width:100%;height:8px;background:#e0e7ef;border-radius:4px;overflow:hidden;display:none;margin-bottom:0.5rem;">
+      <div id="progressBar" style="height:100%;width:0;background:#007bff;transition:width 0.3s;"></div>
+    </div>
     <div id="status" role="status" aria-live="polite"></div>
   </div>
   <!-- Modal for PDF preview -->
@@ -242,6 +250,7 @@
   <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@latest/build/pdf.min.js"></script>
   <script>
     const input = document.getElementById('pdfs');
+    const dropZone = document.getElementById('dropZone');
     const mergeBtn = document.getElementById('merge');
     const statusDiv = document.getElementById('status');
     const fileList = document.getElementById('fileList');
@@ -249,6 +258,8 @@
     const closeModal = document.getElementById('closeModal');
     const pdfPreview = document.getElementById('pdf-preview');
     const darkModeToggle = document.getElementById('darkModeToggle');
+    const progressBarContainer = document.getElementById('progressBarContainer');
+    const progressBar = document.getElementById('progressBar');
     let filesArr = [];
     let isMerging = false;
 
@@ -263,6 +274,37 @@
       if (e.key === 'Enter' || e.key === ' ') darkModeToggle.onclick();
     };
 
+    // Drag-and-drop logic
+    dropZone.ondragover = (e) => {
+      e.preventDefault();
+      dropZone.style.background = '#b6d4fe';
+    };
+    dropZone.ondragleave = (e) => {
+      e.preventDefault();
+      dropZone.style.background = '#f1f3f6';
+    };
+    dropZone.ondrop = (e) => {
+      e.preventDefault();
+      dropZone.style.background = '#f1f3f6';
+      const files = Array.from(e.dataTransfer.files).filter(f => f.type === 'application/pdf');
+      if (files.length === 0) {
+        statusDiv.textContent = 'Please drop PDF files only.';
+        return;
+      }
+      filesArr = filesArr.concat(files);
+      renderFileList();
+    };
+    dropZone.onclick = () => input.click();
+    dropZone.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') input.click();
+    };
+
+    function formatFileSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+    }
+
     function renderFileList() {
       fileList.innerHTML = '';
       filesArr.forEach((file, idx) => {
@@ -272,7 +314,7 @@
         li.setAttribute('aria-label', file.name);
         const nameDiv = document.createElement('div');
         nameDiv.className = 'file-name';
-        nameDiv.textContent = file.name;
+        nameDiv.textContent = file.name + ' (' + formatFileSize(file.size) + ')';
         const actions = document.createElement('div');
         actions.className = 'file-actions';
         // Up button
@@ -286,6 +328,8 @@
           if (idx > 0) {
             [filesArr[idx-1], filesArr[idx]] = [filesArr[idx], filesArr[idx-1]];
             renderFileList();
+            li.style.background = '#ffe082';
+            setTimeout(() => { li.style.background = ''; }, 400);
           }
         };
         // Down button
@@ -299,6 +343,8 @@
           if (idx < filesArr.length - 1) {
             [filesArr[idx+1], filesArr[idx]] = [filesArr[idx], filesArr[idx+1]];
             renderFileList();
+            li.style.background = '#ffe082';
+            setTimeout(() => { li.style.background = ''; }, 400);
           }
         };
         // Preview button
@@ -328,7 +374,7 @@
     }
 
     input.onchange = (e) => {
-      filesArr = Array.from(e.target.files);
+      filesArr = filesArr.concat(Array.from(e.target.files));
       renderFileList();
     };
 
@@ -394,15 +440,25 @@
       }
       if (isMerging) return;
       isMerging = true;
-      statusDiv.innerHTML = 'Merging... <span class="spinner" aria-label="Loading"></span>';
+      mergeBtn.disabled = true;
+      mergeBtn.innerHTML = '<span class="spinner" aria-label="Loading"></span> Merging...';
+      statusDiv.textContent = '';
+      progressBarContainer.style.display = 'block';
+      progressBar.style.width = '0%';
       try {
         const { PDFDocument } = window.PDFLib;
         const mergedPdf = await PDFDocument.create();
-        for (let file of filesArr) {
-          const arrayBuffer = await file.arrayBuffer();
-          const pdf = await PDFDocument.load(arrayBuffer);
-          const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
-          copiedPages.forEach(page => mergedPdf.addPage(page));
+        for (let i = 0; i < filesArr.length; i++) {
+          const file = filesArr[i];
+          try {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await PDFDocument.load(arrayBuffer);
+            const copiedPages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+            copiedPages.forEach(page => mergedPdf.addPage(page));
+          } catch (fileErr) {
+            throw new Error(`File '${file.name}' is corrupted or unreadable.`);
+          }
+          progressBar.style.width = ((i+1)/filesArr.length*100) + '%';
         }
         const mergedPdfBytes = await mergedPdf.save();
         const blob = new Blob([mergedPdfBytes], { type: 'application/pdf' });
@@ -414,11 +470,15 @@
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        statusDiv.textContent = 'Merged PDF downloaded!';
+        statusDiv.textContent = 'PDF Merged Successfully! Download will begin automatically.';
       } catch (err) {
-        statusDiv.textContent = 'Error merging PDFs: ' + err.message;
+        statusDiv.textContent = 'Error merging PDFs: ' + err.message + (err.message.includes('corrupted') ? ' Please check and try again.' : '');
       } finally {
         isMerging = false;
+        mergeBtn.disabled = false;
+        mergeBtn.innerHTML = 'Merge PDFs';
+        progressBarContainer.style.display = 'none';
+        progressBar.style.width = '0%';
       }
     };
     // Keyboard accessibility for merge button
